@@ -1,126 +1,143 @@
-# Voice Agent — AI Phone Receptionist
+<div align="center">
 
-Production-style voice agent for a healthcare clinic: answers calls, talks
-naturally (English / Urdu / Hindi with live code-switching), books **real**
-appointments, reads the caller's mood, and logs everything to a dashboard.
+# 🎙️ Voice Agent
 
-Built on Twilio media streams + Deepgram STT + Groq LLM + Edge/Deepgram TTS.
-Runs fully on free tiers.
+### A production-style AI phone receptionist that speaks English, Urdu & Hindi
+
+[![CI](https://img.shields.io/badge/CI-pytest-brightgreen)](.github/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-60%20passing-success)](tests/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
+[![Cost](https://img.shields.io/badge/API%20cost-%240%20free%20tiers-purple)](README.md#-api-keys-all-free)
+
+*Real-time voice agent · Live language switching · Real appointment booking · Mood-aware empathy*
+
+</div>
 
 ---
 
-## Architecture
+A complete voice AI agent for a healthcare clinic front-desk: it answers calls,
+converses naturally like a human (switching between English ↔ اردو ↔ हिन्दी mid-sentence),
+**actually books appointments** into a database via function calling, senses when a
+caller is frustrated and softens its tone, and logs every conversation to a live dashboard.
 
+Built entirely on **free API tiers** — no credit card needed to run this project.
+
+## ✨ What Makes It Different
+
+| | Typical demo bots | This project |
+|---|---|---|
+| Booking | *"Sure, I booked you!"* (hallucinated) | Function-calling into real DB — double-booking impossible |
+| Language | One language only | Auto code-switch EN/UR/HI per sentence, human-style |
+| Interruption | Ignores you / breaks | Barge-in with echo guard, partial context preserved |
+| Caller emotion | Ignored | Mood detected per utterance → empathy hints prime replies |
+| Cost | Paid APIs everywhere | Groq free tier + Deepgram $200 credit + Edge TTS ($0) |
+| Observability | print() | Per-turn latency metrics + live transcript dashboard |
+
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    C[Caller phone / browser mic] -->|mulaw 8kHz WebSocket| F[FastAPI media server]
+    F --> S[Deepgram STT<br/>nova-3 multi-language]
+    S --> M[Mood classifier<br/>keywords + LLM]
+    M --> L[Groq LLM gpt-oss-20b<br/>+ function calling]
+    L -->|check_availability<br/>book_appointment| DB[(Appointments DB)]
+    L --> T[TTS router]
+    T -->|English| A[Deepgram Aura]
+    T -->|اردو / हिन्दी| E[Edge Neural Voices - free]
+    T -->|ulaw 8kHz| F
+    F --> C
+    F --> D[/Live dashboard<br/>transcripts + moods/]
 ```
-Caller (phone/browser mic)
-        │
-   Twilio Media Stream (or browser WS demo)
-        │  mulaw 8kHz over WebSocket
-        ▼
-  FastAPI server (main.py)
-        │
-        ├── Deepgram STT (nova-3 multi) ──► transcripts, auto language detect
-        ├── Mood classifier ────────────► positive/neutr../angry (+ empathy hints)
-        ├── Groq LLM (gpt-oss-20b) ─────► replies + FUNCTION CALLING:
-        │       check_availability / book_appointment / list_appointments
-        │       (real DB writes - the agent cannot fake bookings)
-        ├── TTS router ─────────────────► English: Deepgram Aura
-        │                                Urdu/Hindi: Edge neural voices (free)
-        └── SQLite (SQLCipher-ready) ───► call logs, transcripts+moods,
-                                         appointments, DNC list, consent records
-```
 
-## Features
-
-- **Real-time voice conversation** with barge-in (caller can interrupt anytime)
-- **Trilingual**: English ↔ Urdu ↔ Hindi mid-sentence switching; Roman Urdu supported
-- **Real appointment booking** via function calling — availability checked against DB,
-  double-booking impossible, agent instructed to never claim a booking that didn't happen
-- **Mood detection** per utterance (keyword fast-path + LLM fallback); negative moods
-  prime the next reply with empathy instructions
-- **Live latency metrics** (`/stats`): STT→LLM→TTS breakdown per turn
-- **Conversation dashboard** (`/dashboard`): all calls, full transcripts, mood badges,
-  auto-refreshes every 4s during live conversations
-- **TCPA compliance guards** for outbound: DNC list, consent records, calling-hours window
-- **Admin auth** on call-triggering endpoints (`X-API-Key` header)
-- **Browser demo mode** (`/demo`) — test the whole pipeline from laptop mic, no Twilio needed
-
-## Quick Start
+## 🚀 Quick Start
 
 ```bash
+git clone https://github.com/<you>/voice-agent.git
+cd voice-agent
 pip install -r requirements.txt
-copy .env.example .env      # then fill in keys below
+copy .env.example .env        # fill in 2 keys (below)
 uvicorn main:app --port 8000
 ```
 
-### Required API keys (all free, no credit card)
+Open **http://localhost:8000/demo** → *Start Talking* → just speak.
 
-| Key | Where | Cost |
-|-----|-------|------|
-| `DEEPGRAM_API_KEY` | console.deepgram.com | $200 free credit |
-| `GROQ_API_KEY` | console.groq.com | free forever |
-| `TWILIO_*` | console.twilio.com | trial credit (only needed for real phone calls) |
+Try saying:
+- *"Book an appointment tomorrow at 3 PM"* → real slot checked, confirmation asked, booking saved
+- *"مجھے کل کا اپائنٹمنٹ چاہیے"* → agent switches to Urdu instantly
+- Interrupt it mid-sentence — it stops and listens like a human
 
-Optional: `ANTHROPIC_API_KEY` + `LLM_PROVIDER=anthropic`, or ElevenLabs TTS.
+## 🔑 API Keys (all free)
 
-Then open **http://localhost:8000/demo**, click *Start Talking*, and speak.
+| Key | Get it from | Free amount |
+|-----|-------------|-------------|
+| `DEEPGRAM_API_KEY` | [console.deepgram.com](https://console.deepgram.com) | $200 credit |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | unlimited-ish free tier |
+| `TWILIO_*` | [console.twilio.com](https://console.twilio.com) | trial credit *(only for real phone calls)* |
 
-### Real phone calls (Twilio)
+Optional swaps: `LLM_PROVIDER=anthropic` (Claude) or ElevenLabs TTS.
 
-1. Put a public URL in `.env` → `BASE_URL` (e.g. `ngrok http 8000`)
-2. Twilio phone number → Voice webhook → `<BASE_URL>/twilio/inbound` (HTTP POST)
-3. Trigger outbound: `POST /call` with header `X-API-Key: <ADMIN_API_KEY>` and
-   form field `phone_number`
+## 📞 Real Phone Calls
 
-## Endpoints
+1. Expose the server: `ngrok http 8000` → put URL in `.env` as `BASE_URL`
+2. Twilio console → your number → **Voice webhook** → `https://<your-url>/twilio/inbound`
+3. Outbound campaigns: `POST /call` with `X-API-Key` header (TCPA guards built in:
+   DNC list, consent records, calling-hours window)
 
-| Route | What |
-|-------|------|
-| `GET /demo` | Browser mic demo page |
-| `GET /dashboard` | Conversation + mood dashboard |
-| `GET /calls`, `GET /calls/{id}/transcript` | Dashboard JSON APIs |
-| `GET /stats` | Per-turn latency breakdown |
-| `GET /health` | Health check |
-| `POST /twilio/inbound` `/twilio/outbound` `/twilio/amd_status` `/twilio/status` | Twilio webhooks |
-| `POST /call` `/call/batch` `/call/csv` | Outbound dialing (admin key required) |
+## 📊 Screenshots
 
-## Testing
+| Dashboard (`/dashboard`) | Demo (`/demo`) |
+|---|---|
+| Live transcripts + mood badges, auto-refreshes during calls | Browser mic pipeline test — no Twilio needed |
+
+*(add your GIFs here — record with [Kap](https://getkap.co) or OBS)*
+
+## 🧪 Testing
+
+60 offline tests — zero API spend:
 
 ```bash
 python -m pytest tests -q
 ```
 
-60 tests cover TwiML generation, queue policy logic, webhooks/auth, LLM tool-calling
-round-trips, scheduler rules, language detection, TTS pipeline, mood classification
-and dashboard APIs — all offline/mocked, no API spend.
+Covers TwiML generation, TCPA queue policy, webhook auth, LLM function-calling
+round-trips, booking rules (double-book/past-date/hours guards), language detection,
+TTS mp3→mulaw pipeline, mood classification priority, dashboard APIs.
 
-## Project Structure
+## 🗺️ Endpoints
 
+| Route | Purpose |
+|-------|---------|
+| `GET /demo` | Browser mic demo |
+| `GET /dashboard` | Conversation + mood dashboard |
+| `GET /calls` · `GET /calls/{id}/transcript` | Dashboard JSON APIs |
+| `GET /stats` | Latency breakdown per turn |
+| `POST /twilio/*` | Inbound/outbound/AMD/status webhooks |
+| `POST /call` `/call/batch` `/call/csv` | Outbound dialing (admin-key protected) |
+
+## 🤝 Contributing
+
+PRs welcome! Ideas that would level this up:
+1. Provider fallback chain (Groq→Anthropic on rate-limit)
+2. Mid-call STT reconnect without dropping audio
+3. SMS confirmations after booking
+4. Multi-tenant campaigns
+
+```bash
+git checkout -b feature/amazing-thing
+python -m pytest tests -q     # keep them green
+git commit -m "feat: amazing thing"
 ```
-main.py          FastAPI app: webhooks, WS media loop, mood wiring, dashboard APIs
-llm.py           Groq/Anthropic streaming + function-calling + mood classifier
-tts.py           Sentence-chunked TTS router (Deepgram Aura / Edge / ElevenLabs)
-stt.py           Deepgram streaming STT client
-scheduler.py     Appointment tools (single source of truth for bookings)
-call_queue.py    Outbound batch dialer with TCPA checks
-telephony.py     TwiML builders
-database.py      Models + SQLCipher-or-sqlite engine + light migrations
-outbound.py      Twilio REST: dialing, AMD voicemail redirect
-static/          demo.html, dashboard.html
-tests/           60 pytest tests
-```
 
-## Known Trade-offs
+## ⭐ Support
 
-- Free Groq tier is rate-limited (~30 req/min) - bursts can add a few seconds of delay;
-  mood detection is throttled to protect the budget
-- Deepgram multi mode transcribes Urdu speech as Hindi script (meaning preserved);
-  agent still replies in Urdu/Roman Urdu as instructed
-- Windows dev runs unencrypted SQLite (SQLCipher wheels unavailable); production Linux
-  gets encryption at rest automatically
+If this helped you build something, please **star the repo** — it genuinely helps others find it.
 
-## Roadmap
+## 📄 License
 
-- Provider fallbacks (Groq→Anthropic) + mid-call STT reconnect
-- SMS confirmations after booking
-- Multi-campaign support, load testing, CI
+MIT — see [LICENSE](LICENSE).
+
+> ⚠️ Healthcare data note: transcripts may contain PHI. The DB layer auto-uses SQLCipher
+> encryption on Linux; on Windows dev it falls back to plain SQLite with loud warnings.
+> For real patient deployments you need signed BAAs with every provider.
