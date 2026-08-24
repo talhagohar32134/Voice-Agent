@@ -38,13 +38,24 @@
 <script>
 const moodBadge = m => `<span class="mood ${m||'unknown'}">${m||'unknown'}</span>`;
 const shortId = c => c.length > 18 ? c.slice(0,15)+'…' : c;
+let openCallId = null;      // transcript currently expanded
+let lastListJson = '';      // change detection - no flicker on poll
 
 async function showList() {
   document.querySelector('.back').style.display='none';
   document.getElementById('panel').style.display='none';
   document.getElementById('tbl').style.display='';
+  openCallId = null;
+  await renderList();
+}
+
+async function renderList() {
   const res = await fetch('/calls');
   const calls = await res.json();
+  const json = JSON.stringify(calls);
+  if (json === lastListJson) return;   // nothing changed
+  lastListJson = json;
+
   const tb = document.querySelector('#tbl tbody');
   tb.innerHTML = '';
   for (const c of calls) {
@@ -61,6 +72,7 @@ async function showList() {
 }
 
 async function showTranscript(callId) {
+  openCallId = callId;
   document.getElementById('tbl').style.display='none';
   document.querySelector('.back').style.display='';
   const panel = document.getElementById('panel');
@@ -76,7 +88,15 @@ async function showTranscript(callId) {
     div.innerHTML = `<span class="who">${m.role === 'user' ? 'Caller' : 'Agent'}</span>${moodTag}<br>${m.text}`;
     panel.appendChild(div);
   }
+  panel.scrollTop = panel.scrollHeight;
 }
+
+// Live updates: poll every 4s while page is visible
+setInterval(() => {
+  if (document.hidden) return;
+  if (openCallId) showTranscript(openCallId);   // keep open transcript fresh
+  else renderList();
+}, 4000);
 
 showList();
 </script>
