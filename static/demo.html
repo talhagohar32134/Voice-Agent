@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Voice Agent - Live Demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: #0f1115; color: #e6e6e6;
+    max-width: 720px; margin: 40px auto; padding: 0 20px;
+  }
+  h1 { font-size: 1.4rem; } .sub { color: #9aa0a6; margin-top: -8px }
+  #orb {
+    width: 140px; height: 140px; border-radius: 50%;
+    margin: 28px auto; background: radial-gradient(circle at 35% 35%, #2b3244, #14171e);
+    box-shadow: 0 0 0 0 rgba(80,140,255,.55);
+    transition: background .3s;
+  }
+  #orb.listening { animation: pulse-blue 1.6s infinite; }
+  #orb.speaking  { animation: pulse-green 1.1s infinite; }
+  @keyframes pulse-blue { 0%{box-shadow:0 0 0 0 rgba(80,140,255,.5)} 70%{box-shadow:0 0 0 26px rgba(80,140,255,0)} 100%{box-shadow:0 0 0 0 rgba(80,140,255,0)} }
+  @keyframes pulse-green{ 0%{box-shadow:0 0 0 0 rgba(60,220,130,.5)} 70%{box-shadow:0 0 0 30px rgba(60,220,130,0)} 100%{box-shadow:0 0 0 0 rgba(60,220,130,0)} }
+  .row { display:flex; gap:12px; justify-content:center; margin:18px 0; }
+  button {
+    padding:10px 22px; border-radius:8px; border:1px solid #39414f;
+    background:#1a1f2a; color:#fff; font-size:1rem; cursor:pointer;
+  }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:#2563eb; border-color:#2563eb; }
+  #log {
+    background:#151922; border:1px solid #232a36; border-radius:8px;
+    height:220px; overflow-y:auto; padding:10px 14px; font-size:.92rem; line-height:1.5;
+  }
+  .you { color:#7fb2ff } .agent { color:#5fe08d } .sys { color:#9aa0a6; font-style:italic }
+</style>
+</head>
+<body>
+<h1>Voice Agent &mdash; Live Demo</h1>
+<p class="sub">Browser mic &harr; agent (STT &rarr; LLM &rarr; TTS). Twilio ke bina poora pipeline test karo.</p>
+
+<div id="orb"></div>
+
+<div class="row">
+  <button id="startBtn" class="primary">Start Talking</button>
+  <button id="stopBtn" disabled>Stop</button>
+</div>
+
+<div id="log"><div class="sys">Press "Start Talking", allow mic access, aur seedha bolna shuru kar do.</div></div>
+
+<script>
+(() => {
+  const logEl = document.getElementById("log");
+  const orb = document.getElementById("orb");
+  const startBtn = document.getElementById("startBtn");
+  const stopBtn = document.getElementById("stopBtn");
+
+  const SAMPLE_RATE = 8000;
+  let ws = null, audioCtx = null, playCtx = null, processor = null, micStream = null;
+  let running = false;
+
+  function log(line, cls) {
+    const div = document.createElement("div");
+    div.className = cls || "";
+    div.textContent = line;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setOrb(mode) { orb.className = mode || ""; }
+
+  // ---------------- G.711 mu-law codec ----------------
+  function linearToUlaw(pcm) {
+    const BIAS = 0x84, CLIP = 32635;
+    let x = pcm < -CLIP ? -CLIP : (pcm > CLIP ? CLIP : pcm);
+    const sign = (x >> 8) & 0x80;
+    if (sign) x = -x;
+    x += BIAS;
+    let exp = 7, mask = 0x4000;
+    while (exp > 0 && (x & mask) === 0) { exp--; mask >>= 1; }
+    const mant = (x >> (exp + 3)) & 0x0f;
+    return ~(sign | (exp << 4) | mant) & 0xff;
+  }
+
+  const ulawDecodeTable = (() => {
+    const t = new Int16Array(256);
+    for (let i = 0; i < 256; i++) {
+      const u = ~i & 0xff;
+      const sign = u & 0x80, exp = (u >> 4) & 0x07, mant = u & 0x0f;
+      let sample = (((mant << 3) + 0x84) << exp) - 0x84;
+      t[i] = sign ? -sample : sample;
+    }
+    return t;
+  })();
+
+  // ---------------- Playback queue ----------------
+  let activeSources = [];
+  let nextPlayTime = 0;
+
+  function enqueueAudio(bytes) {
+    const samples = new Float32Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) samples[i] = ulawDecodeTable[bytes[i]] / 32768;
+    const buf = playCtx.createBuffer(1, samples.length, SAMPLE_RATE);
+    buf.copyToChannel(samples, 0);
+    const src = playCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(playCtx.destination);
+    const now = playCtx.currentTime;
+    if (nextPlayTime < now) nextPlayTime = now + 0.06;
+    src.start(nextPlayTime);
+    nextPlayTime += samples.length / SAMPLE_RATE;
+    activeSources.push(src);
+    src.onended = () => {
+      activeSources = activeSources.filter(s => s !== src);
+      if (activeSources.length === 0) setOrb(running ? "listening" : "");
+    };
+  }
+
+  function clearPlayback() {
+    activeSources.forEach(s => { try { s.stop(); } catch (e) {} });
+    activeSources = [];
+    nextPlayTime = 0;
+  }
+
+  // ---------------- Mic capture -> mulaw -> WS ----------------
+  function startMic() {
+    const frameBuf = [];
+    processor.onaudioprocess = (ev) => {
+      if (!running || ws.readyState !== 1) return;
+      const input = ev.inputBuffer.getChannelData(0);
+      const ratio = Math.max(1, Math.round(audioCtx.sampleRate / SAMPLE_RATE));
+      for (let i = 0; i < input.length; i += ratio) {
+        // average the block to avoid aliasing
+        let acc = 0, n = 0;
+        for (let j = i; j < Math.min(i + ratio, input.length); j++) { acc += input[j]; n++; }
+        const s = Math.max(-1, Math.min(1, acc / n));
+        frameBuf.push(linearToUlaw(Math.round(s * 32767)));
+      }
+      while (frameBuf.length >= 320) { // 320 bytes = 40ms of mulaw
+        const chunk = frameBuf.splice(0, 320);
+        sendMedia(chunk);
+      }
+    };
+  }
+
+  function sendMedia(bytesArr) {
+    let bin = "";
+    for (let i = 0; i < bytesArr.length; i += 512)
+      bin += String.fromCharCode.apply(null, bytesArr.slice(i, i + 512));
+    ws.send(JSON.stringify({
+      event: "media",
+      sequenceNumber: String(seq++),
+      streamSid: STREAM_SID,
+      media: { track: "inbound", chunk: "1", timestamp: String(seq * 40), payload: btoa(bin) },
+    }));
+  }
+
+  let seq = 0;
+  const STREAM_SID = "DEMO-STREAM";
+
+  // ---------------- WebSocket wiring ----------------
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    return new Promise((resolve, reject) => {
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onopen = () => {
+        seq = 0;
+        // Pretend to be an outbound Twilio stream so the agent greets first
+        ws.send(JSON.stringify({
+          event: "start",
+          sequenceNumber: "0",
+          start: {
+            streamSid: STREAM_SID,
+            callSid: `DEMO-${Date.now()}`,
+            customParameters: { is_outbound: "true" },
+          },
+        }));
+        resolve();
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.event === "clear") { clearPlayback(); setOrb("listening"); }
+          // (server only sends clear today; media comes back via our own speaker queue)
+        } catch (e) {}
+      };
+      ws.onerror = () => reject(new Error("WebSocket error"));
+    });
+  }
+
+  async function handleServerMessage(msg) {
+    const data = JSON.parse(msg.data);
+    if (data.event === "media" && data.media && data.media.payload) {
+      setOrb("speaking");
+      const raw = atob(data.media.payload);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      enqueueAudio(bytes);
+    }
+  }
+
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      await connect();
+
+      audioCtx = new AudioContext();
+      playCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      ws.addEventListener("message", handleServerMessage);
+
+      const source = audioCtx.createMediaStreamSource(micStream);
+      processor = audioCtx.createScriptProcessor(2048, 1, 1);
+      const mute = audioCtx.createGain(); mute.gain.value = 0;
+      source.connect(processor); processor.connect(mute); mute.connect(audioCtx.destination);
+
+      running = true;
+      startMic();
+      stopBtn.disabled = false;
+      setOrb("listening");
+      log("Connected. Agent greeting aa rahi hogi - boliye!", "sys");
+    } catch (err) {
+      log("Error: " + err.message, "sys");
+      startBtn.disabled = false;
+    }
+  });
+
+  stopBtn.addEventListener("click", () => shutdown("Stopped."));
+
+  function shutdown(msg) {
+    running = false;
+    clearPlayback();
+    try { ws && ws.close(); } catch (e) {}
+    try { processor && (processor.onaudioprocess = null); } catch (e) {}
+    try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    try { audioCtx && audioCtx.close(); playCtx.close(); } catch (e) {}
+    ws = null; audioCtx = null; playCtx = null; processor = null; micStream = null;
+    setOrb("");
+    stopBtn.disabled = true;
+    startBtn.disabled = false;
+    if (msg) log(msg, "sys");
+  }
+
+  window.addEventListener("beforeunload", () => running && shutdown());
+})();
+</script>
+</body>
+</html>

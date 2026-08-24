@@ -20,6 +20,7 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
+from fastapi.responses import FileResponse
 
 import config
 from call_queue import process_queue_batch
@@ -94,6 +95,12 @@ def _update_call_log_status_sync(call_sid: str, status: str, duration: int | Non
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/demo")
+async def demo_page():
+    """Browser demo: talk to the agent via laptop mic/speakers (no Twilio)."""
+    return FileResponse("static/demo.html")
 
 
 @app.post("/twilio/inbound")
