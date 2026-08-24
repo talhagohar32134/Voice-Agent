@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Voice Agent - Conversation Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; background:#0f1115; color:#e6e6e6; max-width:900px; margin:30px auto; padding:0 20px; }
+  h1 { font-size:1.3rem } .sub{color:#9aa0a6;margin-top:-8px}
+  table { width:100%; border-collapse:collapse; margin-top:16px }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid #232a36; font-size:.92rem; vertical-align:top }
+  th { color:#9aa0a6; font-weight:600; font-size:.8rem; text-transform:uppercase; letter-spacing:.04em }
+  tr.call:hover { background:#161b24; cursor:pointer }
+  .mood { padding:2px 9px; border-radius:10px; font-size:.78rem; display:inline-block }
+  .mood.positive{background:#12351f;color:#5fe08d} .mood.neutral{background:#232a36;color:#b9c0ca}
+  .mood.worried{background:#3a2f12;color:#ffd166} .mood.frustrated{background:#3d2314;color:#ffab5e}
+  .mood.angry{background:#40161a;color:#ff6b6d} .mood.unknown{background:#1a1f2a;color:#7d8590}
+  #panel { display:none; background:#151922; border:1px solid #232a36; border-radius:10px; padding:14px 18px; margin-top:14px }
+  .msg { margin:8px 0; line-height:1.45 }
+  .who { font-weight:600; font-size:.8rem; text-transform:uppercase; letter-spacing:.05em }
+  .user .who {color:#7fb2ff} .agent .who {color:#5fe08d}
+  .moodtag {font-size:.72rem; opacity:.75}
+  button { padding:6px 14px; border-radius:6px; border:1px solid #39414f; background:#1a1f2a; color:#fff; cursor:pointer }
+  .back { margin-top:14px; display:none }
+  code { color:#7fb2ff; font-size:.85rem }
+</style>
+</head>
+<body>
+<h1>Conversation Dashboard</h1>
+<p class="sub">Har call ki poori baat-cheet + caller ka mood. Row pe click = poora transcript.</p>
+<table id="tbl">
+  <thead><tr><th>Call</th><th>Messages</th><th>Started</th><th>Last Activity</th><th>Moods</th><th>Overall</th></tr></thead>
+  <tbody></tbody>
+</table>
+<button class="back" onclick="showList()">← Back to all calls</button>
+<div id="panel"></div>
+
+<script>
+const moodBadge = m => `<span class="mood ${m||'unknown'}">${m||'unknown'}</span>`;
+const shortId = c => c.length > 18 ? c.slice(0,15)+'…' : c;
+
+async function showList() {
+  document.querySelector('.back').style.display='none';
+  document.getElementById('panel').style.display='none';
+  document.getElementById('tbl').style.display='';
+  const res = await fetch('/calls');
+  const calls = await res.json();
+  const tb = document.querySelector('#tbl tbody');
+  tb.innerHTML = '';
+  for (const c of calls) {
+    const tr = document.createElement('tr');
+    tr.className='call';
+    const moodList = Object.entries(c.moods).map(([k,v])=>`${k}:${v}`).join(', ') || '-';
+    tr.innerHTML = `<td title="${c.call_id}">${shortId(c.call_id)}</td>
+      <td>${c.messages}</td><td>${c.started.replace('.000000','')}</td>
+      <td>${c.last_activity.replace('.000000','')}</td><td>${moodList}</td>
+      <td>${moodBadge(c.dominant_mood)}</td>`;
+    tr.onclick = () => showTranscript(c.call_id);
+    tb.appendChild(tr);
+  }
+}
+
+async function showTranscript(callId) {
+  document.getElementById('tbl').style.display='none';
+  document.querySelector('.back').style.display='';
+  const panel = document.getElementById('panel');
+  panel.style.display='block';
+  panel.innerHTML = '<em>Loading…</em>';
+  const res = await fetch(`/calls/${encodeURIComponent(callId)}/transcript`);
+  const msgs = await res.json();
+  panel.innerHTML = '';
+  for (const m of msgs) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + m.role;
+    const moodTag = m.mood ? ` <span class="moodtag">[${m.mood}]</span>` : '';
+    div.innerHTML = `<span class="who">${m.role === 'user' ? 'Caller' : 'Agent'}</span>${moodTag}<br>${m.text}`;
+    panel.appendChild(div);
+  }
+}
+
+showList();
+</script>
+</body>
+</html>

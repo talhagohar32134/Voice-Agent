@@ -66,7 +66,26 @@ class Transcript(Base):
     call_id = Column(String, index=True)  # twilio_call_id
     role = Column(String)  # "user" or "agent"
     text = Column(String)
+    mood = Column(String)  # caller mood at this utterance (user rows only)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+def _auto_migrate():
+    """Lightweight sqlite migrations - add missing columns if needed."""
+    import sqlalchemy
+
+    additions = {
+        "transcripts": ["ALTER TABLE transcripts ADD COLUMN mood TEXT"],
+    }
+    with engine.connect() as conn:
+        for _table, stmts in additions.items():
+            for stmt in stmts:
+                try:
+                    conn.execute(sqlalchemy.text(stmt))
+                    conn.commit()
+                    logger.info("Migration applied: %s", stmt)
+                except Exception:
+                    pass  # column already exists
 
 
 class CallQueue(Base):
@@ -104,6 +123,7 @@ class Appointment(Base):
 
 
 Base.metadata.create_all(bind=engine)
+_auto_migrate()
 
 
 def get_db():

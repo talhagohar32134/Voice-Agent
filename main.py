@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 import config
 from call_queue import process_queue_batch
 from database import CallLog, CallQueue, SessionLocal, Transcript
-from llm import llm_manager
+from llm import llm_manager, detect_mood, _EMPATHY_HINTS
 from outbound import initiate_outbound_call, redirect_call_to_voicemail
 from stt import DeepgramSTT
 from telephony import get_inbound_twiml, get_outbound_twiml
@@ -103,13 +103,30 @@ def require_admin(x_api_key: str = Header(default=None)):
 # Sync DB helpers (run off the event loop via asyncio.to_thread)
 # ------------------------------------------------------------------
 
-def _persist_transcript_sync(call_id: str, role: str, text: str):
+def _persist_transcript_sync(call_id: str, role: str, text: str) -> int | None:
     db = SessionLocal()
     try:
-        db.add(Transcript(call_id=call_id, role=role, text=text))
+        row = Transcript(call_id=call_id, role=role, text=text)
+        db.add(row)
         db.commit()
+        return row.id
     except Exception:
         logger.exception("Failed saving %s transcript", role)
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+
+def _update_mood_sync(transcript_id: int, mood: str):
+    db = SessionLocal()
+    try:
+        row = db.get(Transcript, transcript_id)
+        if row:
+            row.mood = mood
+            db.commit()
+    except Exception:
+        logger.exception("Failed updating mood on transcript %s", transcript_id)
         db.rollback()
     finally:
         db.close()
@@ -150,6 +167,98 @@ async def health():
 async def demo_page():
     """Browser demo: talk to the agent via laptop mic/speakers (no Twilio)."""
     return FileResponse("static/demo.html")
+
+
+# ------------------------------------------------------------------
+# Conversation dashboard (call transcripts + caller mood)
+# ------------------------------------------------------------------
+
+@app.get("/dashboard")
+async def dashboard_page():
+    return FileResponse("static/dashboard.html")
+
+
+def _list_calls_sync():
+    db = SessionLocal()
+    try:
+        from sqlalchemy import func
+
+        rows = (
+            db.query(
+                Transcript.call_id,
+                func.count(Transcript.id),
+                func.min(Transcript.timestamp),
+                func.max(Transcript.timestamp),
+            )
+            .group_by(Transcript.call_id)
+            .order_by(func.max(Transcript.timestamp).desc())
+            .limit(100)
+            .all()
+        )
+        calls = []
+        for call_id, msg_count, first_ts, last_ts in rows:
+            moods = [
+                r[0]
+                for r in db.query(Transcript.mood)
+                .filter(Transcript.call_id == call_id, Transcript.mood.isnot(None))
+                .all()
+            ]
+            mood_summary = {}
+            for m in moods:
+                mood_summary[m] = mood_summary.get(m, 0) + 1
+            dominant = (
+                max(mood_summary.items(), key=lambda kv: kv[1])[0] if mood_summary else "unknown"
+            )
+            booked = (
+                db.query(CallLog)
+                .filter(CallLog.twilio_call_id == call_id)
+                .count()
+            )
+            calls.append(
+                {
+                    "call_id": call_id,
+                    "messages": msg_count,
+                    "started": str(first_ts),
+                    "last_activity": str(last_ts),
+                    "moods": mood_summary,
+                    "dominant_mood": dominant,
+                }
+            )
+        return calls
+    finally:
+        db.close()
+
+
+@app.get("/calls")
+async def list_calls():
+    return await asyncio.to_thread(_list_calls_sync)
+
+
+def _get_transcripts_sync(call_id: str):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Transcript)
+            .filter(Transcript.call_id == call_id)
+            .order_by(Transcript.id)
+            .all()
+        )
+        return [
+            {
+                "role": r.role,
+                "text": r.text,
+                "mood": r.mood,
+                "timestamp": str(r.timestamp),
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/calls/{call_id}/transcript")
+async def call_transcript(call_id: str):
+    return await asyncio.to_thread(_get_transcripts_sync, call_id)
 
 
 @app.post("/twilio/inbound")
@@ -260,6 +369,7 @@ async def websocket_endpoint(websocket: WebSocket):
     agent_speaking = False
     tts_task = None
     last_response_started = 0.0
+    caller_moods: list[str] = []  # rolling mood history for empathy
 
     async def send_media(audio_chunk: bytes):
         payload = base64.b64encode(audio_chunk).decode("ascii")
@@ -308,8 +418,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 yield token
 
         try:
+            # Empathy: if the caller's recent mood is negative, prime the agent
+            extra = ""
+            recent = caller_moods[-3:]
+            if recent:
+                dominant = max(set(recent), key=recent.count)
+                hint = _EMPATHY_HINTS.get(dominant)
+                if hint and dominant != "positive":
+                    extra = hint
+
             audio_stream = generate_audio_stream(
-                tee_stream(llm_manager.generate_response(call_sid))
+                tee_stream(llm_manager.generate_response(call_sid, extra_system=extra))
             )
             async for chunk in audio_stream:
                 if not agent_speaking:
@@ -337,7 +456,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await finish_assistant_turn(spoken_text)
 
     async def on_transcript(text: str, is_final: bool):
-        nonlocal agent_speaking, tts_task, last_response_started
+        nonlocal agent_speaking, tts_task, last_response_started, caller_moods
 
         text = (text or "").strip()
         if not text:
@@ -364,7 +483,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
         logger.info("Caller: %s", text)
         llm_manager.add_user_message(call_sid, text)
-        await asyncio.to_thread(_persist_transcript_sync, call_sid, "user", text)
+        row_id = await asyncio.to_thread(_persist_transcript_sync, call_sid, "user", text)
+
+        async def _mood_worker():
+            mood = await detect_mood(text)
+            logger.info("Caller mood: %s", mood)
+            caller_moods.append(mood)
+            if row_id:
+                await asyncio.to_thread(_update_mood_sync, row_id, mood)
+
+        asyncio.create_task(_mood_worker())
 
         last_response_started = time.monotonic()
         turn_started_at = last_response_started
