@@ -49,6 +49,10 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 CALLING_HOUR_START = int(os.getenv("CALLING_HOUR_START", "9"))
 CALLING_HOUR_END = int(os.getenv("CALLING_HOUR_END", "18"))
 
+# Clinic bookable window (Mon-Fri) used by the appointment tools
+CLINIC_HOUR_START = int(os.getenv("CLINIC_HOUR_START", "9"))
+CLINIC_HOUR_END = int(os.getenv("CLINIC_HOUR_END", "17"))
+
 # Interruption guard: ignore short barge-in blips (echo of agent's own TTS,
 # coughs, noise). Final transcripts shorter than this never cancel the agent.
 MIN_INTERRUPT_CHARS = int(os.getenv("MIN_INTERRUPT_CHARS", "2"))

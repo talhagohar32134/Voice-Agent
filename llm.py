@@ -1,10 +1,24 @@
+import asyncio
+import json
 import logging
+from datetime import datetime
 
 from anthropic import AsyncAnthropic
 
 import config
+import scheduler
 
 logger = logging.getLogger(__name__)
+
+
+def _system_prompt() -> str:
+    """System prompt plus live clock so relative dates ('tomorrow') resolve."""
+    now = datetime.now().strftime("%A %d %B %Y, %I:%M %p")
+    return (
+        f"{config.SYSTEM_PROMPT}\n"
+        f"Current date and time: {now}. Resolve words like 'today' or 'tomorrow' "
+        "against this before calling tools."
+    )
 
 _anthropic_client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY or "missing")
 
@@ -20,6 +34,8 @@ if config.LLM_PROVIDER == "groq":
     except ImportError:
         logger.warning("openai package not installed - Groq provider unavailable")
 
+MAX_TOOL_ROUNDS = 3  # guard against runaway tool loops
+
 
 class LLMManager:
     """Per-call conversation state plus streaming response generation.
@@ -28,8 +44,8 @@ class LLMManager:
     stream finished completely or was interrupted mid-way.
 
     Providers:
-      - anthropic (Claude) via native SDK
-      - groq (free tier) via OpenAI-compatible API
+      - anthropic (Claude) via native SDK - plain chat, no tools yet
+      - groq (free tier) via OpenAI-compatible API - WITH function calling
     """
 
     def __init__(self):
@@ -39,11 +55,9 @@ class LLMManager:
         return self.sessions.setdefault(call_id, [])
 
     def ensure_session(self, call_id: str, is_outbound: bool = False):
-        """Create session on call start so outbound calls get their greeting."""
         if call_id and call_id not in self.sessions:
             self.sessions[call_id] = []
             if is_outbound:
-                # Agent "speaks" first on outbound - seed history with greeting.
                 self.sessions[call_id].append(
                     {"role": "assistant", "content": config.OUTBOUND_GREETING}
                 )
@@ -57,38 +71,105 @@ class LLMManager:
             self.ensure_session(call_id).append({"role": "assistant", "content": text.strip()})
 
     def end_session(self, call_id: str):
-        """Free memory once a call is over."""
         self.sessions.pop(call_id, None)
+
+    # ------------------------------------------------------------------
+    # Anthropic (plain chat)
+    # ------------------------------------------------------------------
 
     async def _stream_anthropic(self, session):
         async with _anthropic_client.messages.stream(
             model=config.ANTHROPIC_MODEL,
             max_tokens=256,
-            system=config.SYSTEM_PROMPT,
+            system=_system_prompt(),
             messages=session,
         ) as stream:
             async for text in stream.text_stream:
                 yield text
 
-    async def _stream_groq(self, session):
-        messages = [{"role": "system", "content": config.SYSTEM_PROMPT}] + session
-        response = await _groq_client.chat.completions.create(
+    # ------------------------------------------------------------------
+    # Groq with function calling
+    # ------------------------------------------------------------------
+
+    async def _groq_request_stream(self, messages):
+        return await _groq_client.chat.completions.create(
             model=config.GROQ_MODEL,
             messages=messages,
-            max_tokens=256,
+            max_tokens=300,
             stream=True,
+            tools=scheduler.TOOLS_SCHEMA,
         )
-        async for chunk in response:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                yield delta.content
+
+    async def _stream_groq_with_tools(self, call_id: str, session):
+        """Stream a reply; transparently execute tool calls and continue.
+
+        The caller sees only natural-language tokens. Tool traffic is
+        appended to history so the model keeps context across rounds.
+        """
+        messages = [{"role": "system", "content": _system_prompt()}] + session
+        context = {"phone_number": "", "call_id": call_id}
+
+        for _round in range(MAX_TOOL_ROUNDS):
+            content_parts = []
+            tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments}
+
+            response = await self._groq_request_stream(messages)
+            async for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                if delta.content:
+                    content_parts.append(delta.content)
+                    yield delta.content  # speak through immediately
+                for tc in delta.tool_calls or []:
+                    slot = tool_calls.setdefault(tc.index, {"id": tc.id, "name": "", "arguments": ""})
+                    if tc.id:
+                        slot["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            slot["name"] += tc.function.name
+                        if tc.function.arguments:
+                            slot["arguments"] += tc.function.arguments
+
+            if not tool_calls:
+                break  # pure text answer - done
+
+            # Persist assistant turn that requested the tools, then run them.
+            assistant_msg = {
+                "role": "assistant",
+                "content": "".join(content_parts) or None,
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for _idx, tc in sorted(tool_calls.items())
+                ],
+            }
+            messages.append(assistant_msg)
+            session.append(assistant_msg)
+
+            for _, tc in sorted(tool_calls.items()):
+                logger.info("Tool call %s(%s) for call %s", tc["name"], tc["arguments"], call_id)
+                result = await asyncio.to_thread(scheduler.execute_tool, tc["name"], tc["arguments"], context)
+                logger.info("Tool result: %s", result[:200])
+                tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
+                messages.append(tool_msg)
+                session.append(tool_msg)
+            # loop continues -> model now answers with real tool data
+        else:
+            logger.warning("Tool round limit hit for call %s", call_id)
 
     async def generate_response(self, call_id: str):
-        """Async generator of response tokens. Does NOT mutate history."""
+        """Async generator of response tokens. Does NOT mutate history
+        EXCEPT tool-call/tool-result bookkeeping required by the API."""
         session = self.ensure_session(call_id)
         try:
             if config.LLM_PROVIDER == "groq":
-                stream = self._stream_groq(session)
+                stream = self._stream_groq_with_tools(call_id, session)
             else:
                 stream = self._stream_anthropic(session)
             async for text in stream:

@@ -91,6 +91,18 @@ class ConsentRecord(Base):
     opt_in_timestamp = Column(DateTime, default=datetime.utcnow)
 
 
+class Appointment(Base):
+    """Real bookings created via LLM tool-calling - source of truth."""
+    __tablename__ = "appointments"
+    id = Column(Integer, primary_key=True, index=True)
+    phone_number = Column(String, index=True)
+    patient_name = Column(String, default="")
+    appointment_time = Column(DateTime, index=True)  # clinic-local naive datetime
+    status = Column(String, default="booked")  # booked / cancelled / completed
+    call_id = Column(String, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 Base.metadata.create_all(bind=engine)
 
 

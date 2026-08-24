@@ -39,6 +39,49 @@ logger = logging.getLogger("voice-agent")
 
 app = FastAPI(title="Voice Agent")
 
+# ------------------------------------------------------------------
+# Turn latency metrics (in-memory, last N turns)
+# ------------------------------------------------------------------
+
+_METRICS_MAX_TURNS = 200
+_metrics: list[dict] = []
+
+
+def _record_turn_latency(stt_to_first_token_ms, first_token_to_first_audio_ms, total_ms):
+    entry = {
+        "ts": time.time(),
+        "stt_to_first_token_ms": round(stt_to_first_token_ms),
+        "first_token_to_first_audio_ms": round(first_token_to_first_audio_ms),
+        "total_ms": round(total_ms),
+    }
+    _metrics.append(entry)
+    if len(_metrics) > _METRICS_MAX_TURNS:
+        del _metrics[: len(_metrics) - _METRICS_MAX_TURNS]
+
+
+def _percentile(values, pct):
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, int(len(ordered) * pct))
+    return ordered[idx]
+
+
+@app.get("/stats")
+async def stats():
+    """Latency breakdown per conversational turn."""
+    turns = list(_metrics)
+    return {
+        "turn_count": len(turns),
+        "avg_total_ms": round(sum(t["total_ms"] for t in turns) / len(turns)) if turns else None,
+        "avg_stt_to_first_token_ms": round(sum(t["stt_to_first_token_ms"] for t in turns) / len(turns)) if turns else None,
+        "avg_first_token_to_first_audio_ms": (
+            round(sum(t["first_token_to_first_audio_ms"] for t in turns) / len(turns)) if turns else None
+        ),
+        "p90_total_ms": _percentile([t["total_ms"] for t in turns], 0.9),
+        "recent": turns[-10:],
+    }
+
 
 def get_db():
     db = SessionLocal()
@@ -249,15 +292,18 @@ async def websocket_endpoint(websocket: WebSocket):
             agent_speaking = False
             await finish_assistant_turn(spoken_text)
 
-    async def run_agent_response():
+    async def run_agent_response(turn_started_at: float | None = None):
         nonlocal agent_speaking
         agent_speaking = True
 
         spoken_text = ""  # per-response local state - no cross-turn races
+        first_token_at = None
 
         async def tee_stream(token_stream):
-            nonlocal spoken_text
+            nonlocal spoken_text, first_token_at
             async for token in token_stream:
+                if first_token_at is None:
+                    first_token_at = time.monotonic()
                 spoken_text += token
                 yield token
 
@@ -269,6 +315,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not agent_speaking:
                     break
                 await send_media(chunk)
+                if turn_started_at is not None and first_token_at is not None:
+                    # First audio went out on the wire - record the full breakdown once.
+                    now = time.monotonic()
+                    _record_turn_latency(
+                        (first_token_at - turn_started_at) * 1000,
+                        (now - first_token_at) * 1000,
+                        (now - turn_started_at) * 1000,
+                    )
+                    logger.info(
+                        "Turn latency: total=%.0fms llm_first_token=%.0fms tts_first_audio=%.0fms",
+                        (now - turn_started_at) * 1000,
+                        (first_token_at - turn_started_at) * 1000,
+                        (now - first_token_at) * 1000,
+                    )
+                    turn_started_at = None  # only measure the first chunk
         except asyncio.CancelledError:
             pass
         finally:
@@ -306,9 +367,10 @@ async def websocket_endpoint(websocket: WebSocket):
         await asyncio.to_thread(_persist_transcript_sync, call_sid, "user", text)
 
         last_response_started = time.monotonic()
+        turn_started_at = last_response_started
         if tts_task and not tts_task.done():
             tts_task.cancel()
-        tts_task = asyncio.create_task(run_agent_response())
+        tts_task = asyncio.create_task(run_agent_response(turn_started_at))
 
     try:
         stt = DeepgramSTT(on_transcript)

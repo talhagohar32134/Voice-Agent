@@ -106,7 +106,7 @@ def test_groq_provider_streams_with_system_prompt(monkeypatch):
         async def create(self, **kwargs):
             captured.update(kwargs)
             chunk = SimpleNamespace(
-                choices=[SimpleNamespace(delta=SimpleNamespace(content="namaste"))]
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="namaste", tool_calls=None))]
             )
             empty = SimpleNamespace(choices=[])
             return _Stream([chunk, empty])
