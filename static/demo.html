@@ -46,7 +46,9 @@
   <button id="stopBtn" disabled>Stop</button>
 </div>
 
-<div id="log"><div class="sys">Press "Start Talking", allow mic access, aur seedha bolna shuru kar do.</div></div>
+<div id="status" class="sys" style="text-align:center; min-height:1.4em; margin-bottom:8px;"></div>
+
+<div id="log"><div class="sys">Press "Start Talking", allow mic access, aur seedha bolna shuru kar do. English / Urdu / Hindi - jaisi marzi.</div></div>
 
 <script>
 (() => {
@@ -65,6 +67,12 @@
     div.textContent = line;
     logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const statusEl = document.getElementById("status");
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg || "";
+    statusEl.style.color = isError ? "#ff6b6b" : "#9aa0a6";
   }
 
   function setOrb(mode) { orb.className = mode || ""; }
@@ -98,6 +106,7 @@
   let nextPlayTime = 0;
 
   function enqueueAudio(bytes) {
+    if (!playCtx) return; // contexts are created before connect, but stay safe
     const samples = new Float32Array(bytes.length);
     for (let i = 0; i < bytes.length; i++) samples[i] = ulawDecodeTable[bytes[i]] / 32768;
     const buf = playCtx.createBuffer(1, samples.length, SAMPLE_RATE);
@@ -184,31 +193,50 @@
           // (server only sends clear today; media comes back via our own speaker queue)
         } catch (e) {}
       };
-      ws.onerror = () => reject(new Error("WebSocket error"));
+      ws.onerror = () => reject(new Error("WebSocket error - server band hai?"));
+      ws.onclose = (ev) => {
+        if (running) {
+          setStatus("Connection closed (code " + ev.code + "). Stop dabakar dobara Start karo.", true);
+          log("WS closed: " + ev.code + " " + (ev.reason || ""), "sys");
+        }
+      };
     });
   }
 
   async function handleServerMessage(msg) {
-    const data = JSON.parse(msg.data);
-    if (data.event === "media" && data.media && data.media.payload) {
-      setOrb("speaking");
-      const raw = atob(data.media.payload);
-      const bytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-      enqueueAudio(bytes);
+    try {
+      const data = JSON.parse(msg.data);
+      if (data.event === "media" && data.media && data.media.payload) {
+        setOrb("speaking");
+        const raw = atob(data.media.payload);
+        const bytes = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        enqueueAudio(bytes);
+      } else if (data.event === "clear") {
+        clearPlayback();
+        setOrb(running ? "listening" : "");
+      }
+    } catch (err) {
+      log("Handler error: " + err.message, "sys");
     }
   }
 
   startBtn.addEventListener("click", async () => {
     startBtn.disabled = true;
     try {
+      setStatus("Mic permission...");
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
-      await connect();
 
+      // Create audio contexts FIRST so greeting audio never races the setup
+      setStatus("Audio engine...");
       audioCtx = new AudioContext();
       playCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+
+      setStatus("Connecting to agent...");
+      await connect();
+
       ws.addEventListener("message", handleServerMessage);
 
       const source = audioCtx.createMediaStreamSource(micStream);
@@ -220,10 +248,12 @@
       startMic();
       stopBtn.disabled = false;
       setOrb("listening");
-      log("Connected. Agent greeting aa rahi hogi - boliye!", "sys");
+      setStatus("Connected - boliye! (English / Urdu / Hindi)");
+      log("Connected. Agent greeting aa rahi hogi.", "sys");
     } catch (err) {
       log("Error: " + err.message, "sys");
-      startBtn.disabled = false;
+      setStatus("Failed: " + err.message + " (page refresh karke dobara try karo)", true);
+      shutdown("");
     }
   });
 
@@ -235,7 +265,8 @@
     try { ws && ws.close(); } catch (e) {}
     try { processor && (processor.onaudioprocess = null); } catch (e) {}
     try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-    try { audioCtx && audioCtx.close(); playCtx.close(); } catch (e) {}
+    try { if (audioCtx) audioCtx.close(); } catch (e) {}
+    try { if (playCtx) playCtx.close(); } catch (e) {}
     ws = null; audioCtx = null; playCtx = null; processor = null; micStream = null;
     setOrb("");
     stopBtn.disabled = true;

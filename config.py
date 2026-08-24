@@ -12,6 +12,9 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 
+# "multi" lets Deepgram auto-detect English/Hindi/Urdu per utterance
+STT_LANGUAGE = os.getenv("STT_LANGUAGE", "multi")
+
 # --- LLM provider -----------------------------------------------------------
 # "anthropic" (Claude) or "groq" (free tier, OpenAI-compatible, Llama models)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
@@ -26,6 +29,11 @@ TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 DEEPGRAM_TTS_MODEL = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
+
+# --- Edge TTS (free, no key) - used for non-English sentences automatically ---
+EDGE_VOICE_EN = os.getenv("EDGE_VOICE_EN", "en-US-AvaNeural")
+EDGE_VOICE_UR = os.getenv("EDGE_VOICE_UR", "ur-PK-AsadNeural")
+EDGE_VOICE_HI = os.getenv("EDGE_VOICE_HI", "hi-IN-SwaraNeural")
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant. Keep your responses brief.")
 OUTBOUND_GREETING = os.getenv("OUTBOUND_GREETING", "Hello, how can I help you today?")

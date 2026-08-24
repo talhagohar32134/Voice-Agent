@@ -10,6 +10,10 @@ sqlalchemy>=2.0,<3.0
 phonenumbers>=8.13,<9.0
 pytz>=2024.1
 
+# Multilingual TTS (Urdu/Hindi) - free Microsoft neural voices, no API key
+edge-tts>=7.0
+miniaudio>=1.61
+
 # Encryption at rest (SQLCipher). On Windows, sqlcipher3-binary wheels are
 # unavailable - the app falls back to plain sqlite3 with a loud warning.
 sqlcipher3-binary>=0.5; sys_platform != "win32"

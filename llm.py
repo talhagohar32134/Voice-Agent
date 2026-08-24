@@ -17,7 +17,14 @@ def _system_prompt() -> str:
     return (
         f"{config.SYSTEM_PROMPT}\n"
         f"Current date and time: {now}. Resolve words like 'today' or 'tomorrow' "
-        "against this before calling tools."
+        "against this before calling tools.\n"
+        "LANGUAGE RULE (critical): Mirror the caller's language in EVERY reply. "
+        "If the caller's last message contains Devanagari script, your ENTIRE reply "
+        "MUST be in Hindi (Devanagari script). If it contains Arabic-script words "
+        "(Urdu), your ENTIRE reply MUST be in Urdu (Arabic script). If they used "
+        "Roman Urdu/Hinglish, reply in Roman Urdu. Use plain English only when their "
+        "message was fully English. Switch automatically whenever they switch - like "
+        "a human agent would. Never comment on or translate the language."
     )
 
 _anthropic_client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY or "missing")

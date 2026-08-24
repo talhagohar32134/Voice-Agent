@@ -12,9 +12,12 @@ logger = logging.getLogger(__name__)
 
 class DeepgramSTT:
     def __init__(self, on_transcript_callback):
+        # language=multi requires an explicit multilingual-capable model
+        model = "&model=nova-3" if config.STT_LANGUAGE == "multi" else ""
         self.url = (
             "wss://api.deepgram.com/v1/listen"
-            "?encoding=mulaw&sample_rate=8000&channels=1"
+            f"?encoding=mulaw&sample_rate=8000&channels=1"
+            f"&language={config.STT_LANGUAGE}{model}"
             "&interim_results=true&endpointing=300&utterance_end_ms=1000"
         )
         self.on_transcript_callback = on_transcript_callback
