@@ -11,3 +11,9 @@ def test_demo_page_is_not_admin_protected(api_client):
     """Demo page must load without X-API-Key - it's read-only UI."""
     resp = api_client.get("/demo")  # no auth headers on purpose
     assert resp.status_code == 200
+
+
+def test_root_redirects_to_demo(api_client):
+    resp = api_client.get("/", follow_redirects=False)
+    assert resp.status_code in (301, 302, 307)
+    assert resp.headers["location"].endswith("/demo")

@@ -20,7 +20,7 @@ from fastapi import (
     UploadFile,
     WebSocket,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 import config
 from call_queue import process_queue_batch
@@ -91,6 +91,12 @@ def _update_call_log_status_sync(call_sid: str, status: str, duration: int | Non
 # ------------------------------------------------------------------
 # Twilio webhooks
 # ------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+async def root():
+    """Land on the demo page directly."""
+    return RedirectResponse(url="/demo")
+
 
 @app.get("/health")
 async def health():
