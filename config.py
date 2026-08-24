@@ -12,10 +12,20 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
 
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 
+# --- LLM provider -----------------------------------------------------------
+# "anthropic" (Claude) or "groq" (free tier, OpenAI-compatible, Llama models)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
+# --- TTS provider ------------------------------------------------------------
+# "elevenlabs" or "deepgram" (Aura - billed from the same $200 Deepgram credit)
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs").lower()
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
+DEEPGRAM_TTS_MODEL = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant. Keep your responses brief.")
 OUTBOUND_GREETING = os.getenv("OUTBOUND_GREETING", "Hello, how can I help you today?")

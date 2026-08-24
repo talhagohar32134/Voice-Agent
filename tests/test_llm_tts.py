@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import llm
 import tts
@@ -70,7 +71,8 @@ def test_generate_response_is_generator_without_history_mutation(monkeypatch):
     class FakeClient:
         messages = FakeMessages()
 
-    monkeypatch.setattr(llm, "client", FakeClient())
+    monkeypatch.setattr(llm, "_anthropic_client", FakeClient())
+    monkeypatch.setattr(llm.config, "LLM_PROVIDER", "anthropic")
 
     mgr = llm.LLMManager()
     mgr.add_user_message("call-5", "say something")
@@ -82,6 +84,55 @@ def test_generate_response_is_generator_without_history_mutation(monkeypatch):
     assert "".join(tokens) == "one two"
     # History unchanged - only the user message we added ourselves
     assert [m["role"] for m in mgr.get_or_create_session("call-5")] == ["user"]
+
+
+def test_groq_provider_streams_with_system_prompt(monkeypatch):
+    captured = {}
+
+    class _Stream:
+        def __init__(self, chunks):
+            self._chunks = iter(chunks)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._chunks)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            chunk = SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="namaste"))]
+            )
+            empty = SimpleNamespace(choices=[])
+            return _Stream([chunk, empty])
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeGroq:
+        chat = FakeChat()
+
+    monkeypatch.setattr(llm, "_groq_client", FakeGroq())
+    monkeypatch.setattr(llm.config, "LLM_PROVIDER", "groq")
+
+    mgr = llm.LLMManager()
+    mgr.add_user_message("call-g1", "hello bot")
+
+    async def collect():
+        return [tok async for tok in mgr.generate_response("call-g1")]
+
+    tokens = _run(collect())
+    assert "".join(tokens) == "namaste"
+    # System prompt injected first, user message after
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][-1] == {"role": "user", "content": "hello bot"}
+    # History still untouched by the generator
+    assert [m["role"] for m in mgr.get_or_create_session("call-g1")] == ["user"]
 
 
 # ------------------------------------------------------------------
@@ -107,9 +158,16 @@ class FakeTextToSpeech:
         self.convert = FakeConvert()
 
 
-class FakeClient:
+class FakeElevenLabs:
     def __init__(self):
         self.text_to_speech = FakeTextToSpeech()
+
+
+def _install_fake_tts(monkeypatch):
+    fake = FakeElevenLabs()
+    monkeypatch.setattr(tts, "_elevenlabs_client", fake)
+    monkeypatch.setattr(tts.config, "TTS_PROVIDER", "elevenlabs")
+    return fake
 
 
 async def _tokens(*words):
@@ -117,9 +175,8 @@ async def _tokens(*words):
         yield w
 
 
-def test_sentences_are_spoken_as_completed():
-    fake_client = FakeClient()
-    tts.client = fake_client
+def test_sentences_are_spoken_as_completed(monkeypatch):
+    fake_client = _install_fake_tts(monkeypatch)
 
     async def consume():
         out = [
@@ -137,9 +194,8 @@ def test_sentences_are_spoken_as_completed():
     assert len(chunks) == 4  # 2 audio bytes x 2 sentences
 
 
-def test_final_partial_sentence_is_flushed():
-    fake_client = FakeClient()
-    tts.client = fake_client
+def test_final_partial_sentence_is_flushed(monkeypatch):
+    fake_client = _install_fake_tts(monkeypatch)
 
     async def consume():
         async for _ in tts.generate_audio_stream(_tokens("Just a trailing fragment")):

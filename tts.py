@@ -1,20 +1,29 @@
 import logging
 import re
 
-from elevenlabs.client import AsyncElevenLabs
+import httpx
 
 import config
 
 logger = logging.getLogger(__name__)
 
-client = AsyncElevenLabs(api_key=config.ELEVENLABS_API_KEY)
-
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 
-async def _speak_sentence(sentence: str):
-    """Yield ulaw_8000 audio chunks for one sentence."""
-    audio = await client.text_to_speech.convert(
+# ------------------------------------------------------------------
+# Provider: ElevenLabs
+# ------------------------------------------------------------------
+
+_elevenlabs_client = None
+if config.TTS_PROVIDER == "elevenlabs":
+    from elevenlabs.client import AsyncElevenLabs
+
+    _elevenlabs_client = AsyncElevenLabs(api_key=config.ELEVENLABS_API_KEY or "missing")
+
+
+async def _speak_sentence_elevenlabs(sentence: str):
+    """Yield ulaw_8000 audio chunks for one sentence via ElevenLabs."""
+    audio = await _elevenlabs_client.text_to_speech.convert(
         voice_id=config.ELEVENLABS_VOICE_ID,
         text=sentence,
         model_id="eleven_turbo_v2_5",
@@ -25,14 +34,61 @@ async def _speak_sentence(sentence: str):
         yield chunk
 
 
+# ------------------------------------------------------------------
+# Provider: Deepgram Aura (shares the $200 free STT credit)
+# ------------------------------------------------------------------
+
+_deepgram_http: httpx.AsyncClient | None = None
+
+
+def _get_deepgram_http() -> httpx.AsyncClient:
+    global _deepgram_http
+    if _deepgram_http is None or _deepgram_http.is_closed:
+        _deepgram_http = httpx.AsyncClient(
+            headers={
+                "Authorization": f"Token {config.DEEPGRAM_API_KEY or 'missing'}",
+                "Content-Type": "application/json",
+            },
+            timeout=httpx.Timeout(30.0, connect=5.0),
+        )
+    return _deepgram_http
+
+
+async def _speak_sentence_deepgram(sentence: str):
+    """Yield ulaw_8000 audio chunks for one sentence via Deepgram Aura.
+
+    container=none returns raw mulaw bytes - exactly what Twilio media
+    streams expect.
+    """
+    url = (
+        "https://api.deepgram.com/v1/speak"
+        f"?model={config.DEEPGRAM_TTS_MODEL}&encoding=mulaw&sample_rate=8000&container=none"
+    )
+    client = _get_deepgram_http()
+    async with client.stream("POST", url, json={"text": sentence}) as response:
+        response.raise_for_status()
+        async for chunk in response.aiter_bytes():
+            if chunk:
+                yield chunk
+
+
+async def _speak_sentence(sentence: str):
+    if config.TTS_PROVIDER == "deepgram":
+        gen = _speak_sentence_deepgram(sentence)
+    else:
+        gen = _speak_sentence_elevenlabs(sentence)
+    async for chunk in gen:
+        yield chunk
+
+
 async def generate_audio_stream(text_stream):
     """
-    Takes an async generator yielding text chunks (from Claude) and returns an
-    async generator yielding audio chunks in ulaw_8000 format for Twilio.
+    Takes an async generator yielding text chunks (from Claude/Groq) and returns
+    an async generator yielding audio chunks in ulaw_8000 format for Twilio.
 
-    The ElevenLabs v2 SDK has no streaming-text-input endpoint, so we buffer
-    into sentences and synthesize each sentence as it completes. First audio
-    goes out after the first full sentence - natural prosody, low latency.
+    Neither provider accepts a live text stream on this endpoint set, so we
+    buffer into sentences and synthesize each sentence as it completes. First
+    audio goes out after the first full sentence - natural prosody, low latency.
     """
     buffer = ""
 
