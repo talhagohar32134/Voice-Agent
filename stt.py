@@ -23,12 +23,21 @@ class DeepgramSTT:
 
     async def connect(self):
         extra_headers = {"Authorization": f"Token {config.DEEPGRAM_API_KEY}"}
-        self.ws = await websockets.connect(
-            self.url,
-            extra_headers=extra_headers,
-            ping_interval=20,
-            ping_timeout=10,
-        )
+        # websockets >=14 renamed extra_headers -> additional_headers
+        try:
+            self.ws = await websockets.connect(
+                self.url,
+                additional_headers=extra_headers,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+        except TypeError:
+            self.ws = await websockets.connect(
+                self.url,
+                extra_headers=extra_headers,
+                ping_interval=20,
+                ping_timeout=10,
+            )
         self.receive_task = asyncio.create_task(self._receive_loop())
 
     async def send_audio(self, audio_data: bytes):

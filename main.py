@@ -210,42 +210,25 @@ async def websocket_endpoint(websocket: WebSocket):
     # Per-call state
     agent_speaking = False
     tts_task = None
-    spoken_text = ""          # assistant text streamed so far (full OR partial)
     last_response_started = 0.0
-
-    def _reset_utterance():
-        nonlocal spoken_text
-        spoken_text = ""
 
     async def send_media(audio_chunk: bytes):
         payload = base64.b64encode(audio_chunk).decode("ascii")
         msg = {"event": "media", "streamSid": stream_sid, "media": {"payload": payload}}
         await websocket.send_text(json.dumps(msg))
 
-    def tee_stream(token_stream):
-        """Wrap the LLM token stream so we capture exactly what was generated."""
-        nonlocal spoken_text
-
-        async def _inner():
-            nonlocal spoken_text
-            async for token in token_stream:
-                spoken_text += token
-                yield token
-
-        return _inner()
-
-    async def finish_assistant_turn():
+    async def finish_assistant_turn(spoken_text: str):
         """Persist whatever the caller heard (complete or interrupted response)."""
-        nonlocal spoken_text
         text = spoken_text.strip()
         if text:
             llm_manager.add_assistant_message(call_sid, text)
             await asyncio.to_thread(_persist_transcript_sync, call_sid, "agent", text)
-        _reset_utterance()
 
     async def speak_text(text: str):
         """Stream one fixed string (e.g. outbound greeting) through TTS."""
         nonlocal agent_speaking
+
+        spoken_text = text  # per-response local state - no cross-turn races
 
         async def _gen():
             yield text
@@ -258,11 +241,20 @@ async def websocket_endpoint(websocket: WebSocket):
             pass
         finally:
             agent_speaking = False
-            await finish_assistant_turn()
+            await finish_assistant_turn(spoken_text)
 
     async def run_agent_response():
         nonlocal agent_speaking
         agent_speaking = True
+
+        spoken_text = ""  # per-response local state - no cross-turn races
+
+        async def tee_stream(token_stream):
+            nonlocal spoken_text
+            async for token in token_stream:
+                spoken_text += token
+                yield token
+
         try:
             audio_stream = generate_audio_stream(
                 tee_stream(llm_manager.generate_response(call_sid))
@@ -275,7 +267,7 @@ async def websocket_endpoint(websocket: WebSocket):
             pass
         finally:
             agent_speaking = False
-            await finish_assistant_turn()
+            await finish_assistant_turn(spoken_text)
 
     async def on_transcript(text: str, is_final: bool):
         nonlocal agent_speaking, tts_task, last_response_started
