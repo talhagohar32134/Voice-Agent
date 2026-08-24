@@ -370,6 +370,7 @@ async def websocket_endpoint(websocket: WebSocket):
     tts_task = None
     last_response_started = 0.0
     caller_moods: list[str] = []  # rolling mood history for empathy
+    last_mood_at = 0.0
 
     async def send_media(audio_chunk: bytes):
         payload = base64.b64encode(audio_chunk).decode("ascii")
@@ -486,7 +487,14 @@ async def websocket_endpoint(websocket: WebSocket):
         row_id = await asyncio.to_thread(_persist_transcript_sync, call_sid, "user", text)
 
         async def _mood_worker():
-            mood = await detect_mood(text)
+            # Throttle: max one mood LLM call per 10s per call (free-tier budget).
+            nonlocal last_mood_at
+            now_m = time.monotonic()
+            if now_m - last_mood_at < 10:
+                mood = caller_moods[-1] if caller_moods else "neutral"
+            else:
+                last_mood_at = now_m
+                mood = await detect_mood(text)
             logger.info("Caller mood: %s", mood)
             caller_moods.append(mood)
             if row_id:

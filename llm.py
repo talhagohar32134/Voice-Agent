@@ -225,6 +225,10 @@ async def detect_mood(text: str) -> str:
     kw = _keyword_mood(text)
     if kw:
         return kw
+    # Very short utterances ("i", "ok", "yes") carry no emotional signal -
+    # skip the LLM entirely to conserve free-tier request budget.
+    if len(text.strip()) < 20 and len(text.split()) < 5:
+        return "neutral"
     if config.LLM_PROVIDER != "groq" or _groq_client is None:
         return "neutral"
     try:
