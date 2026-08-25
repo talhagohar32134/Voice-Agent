@@ -1,5 +1,7 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
+# Required by FastAPI Form/UploadFile endpoints (/call, /call/csv)
+python-multipart>=0.0.9
 twilio>=9.0,<10
 anthropic>=0.34,<2.0
 openai>=1.40,<2.0
