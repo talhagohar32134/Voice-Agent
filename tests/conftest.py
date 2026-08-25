@@ -21,6 +21,11 @@ os.environ["DEEPGRAM_API_KEY"] = "test-deepgram"
 os.environ["ANTHROPIC_API_KEY"] = "test-anthropic"
 os.environ["ELEVENLABS_API_KEY"] = "test-elevenlabs"
 os.environ["ELEVENLABS_VOICE_ID"] = "test-voice"
+# Mood-detection tests monkeypatch the Groq client - force the provider so
+# the suite is hermetic even when a developer .env says something else
+# (and on CI, where no .env exists at all).
+os.environ["LLM_PROVIDER"] = "groq"
+os.environ["GROQ_API_KEY"] = "test-groq"
 
 import pytest  # noqa: E402
 
