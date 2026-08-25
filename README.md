@@ -61,7 +61,101 @@ copy .env.example .env        # fill in 2 keys (below)
 uvicorn main:app --port 8000
 ```
 
-Open **http://localhost:8000/demo** → *Start Talking* → just speak.
+### 🏃 How to Run the Agent (step by step)
+
+**Prerequisites:** Python 3.11+ installed (`python --version`).
+
+1. **Install dependencies**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure API keys** — copy the example env and fill in at least
+   `DEEPGRAM_API_KEY` and `GROQ_API_KEY` (both free, see [API Keys](#-api-keys-all-free)):
+
+   ```bash
+   # Windows (cmd/PowerShell)
+   copy .env.example .env
+   # macOS / Linux
+   cp .env.example .env
+   ```
+
+3. **Start the server**
+
+   ```bash
+   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+
+   You should see `INFO uvicorn ... Application startup complete.` — server is live on port 8000.
+   Drop `--reload` for production-style runs; add `--log-level debug` while debugging.
+
+4. **Verify it's running** — hit the health check:
+
+   ```bash
+   curl http://localhost:8000/health      # → {"status":"ok"}
+   ```
+
+5. **Talk to the agent** — open **http://localhost:8000/demo**, click *Start Talking*, allow mic access and just speak.
+   Watch live transcripts + moods on **http://localhost:8000/dashboard** and per-turn latency at **http://localhost:8000/stats**.
+
+6. **(Optional) Real phone calls** — run `ngrok http 8000`, put that URL in `.env` as `BASE_URL`, then point your Twilio number's voice webhook to `<ngrok-url>/twilio/inbound`. See [Real Phone Calls](#-real-phone-calls).
+
+7. **Stop the agent** — press `Ctrl+C` in the terminal running uvicorn.
+
+### ⌨️ Everyday Commands (copy-paste)
+
+Daily use ke liye bas yeh commands — project folder mein terminal kholo:
+
+**Start (Windows PowerShell / cmd):**
+
+```powershell
+cd "C:\path\to\Voice Agent"
+python -m uvicorn main:app --port 8000
+```
+
+**Start (macOS / Linux):**
+
+```bash
+cd voice-agent
+python3 -m uvicorn main:app --port 8000
+```
+
+> Tip: code badalte waqt `--reload` flag add karo, server khud restart hoga.
+
+**Check chal raha hai ya nahi:**
+
+```powershell
+curl http://localhost:8000/health        # → {"status":"ok"}
+```
+
+```bash
+# macOS / Linux
+curl http://localhost:8000/health
+```
+
+Agar browser se check karna ho: **http://localhost:8000/health** kholo.
+
+**Stop karna:**
+- Terminal mein jahan server chal raha hai wahan **`Ctrl + C`** dabao.
+- Agar terminal band ho gayi ho aur process phans jaye:
+
+```powershell
+# Windows - port 8000 ka process dhoondo aur kill karo
+netstat -ano | findstr :8000
+taskkill /PID <upar-wala-PID> /F
+```
+
+```bash
+# macOS / Linux
+lsof -ti :8000 | xargs kill -9
+```
+
+**Tests chalana (kuch bhi change karne ke baad):**
+
+```powershell
+python -m pytest tests -q
+```
 
 Try saying:
 - *"Book an appointment tomorrow at 3 PM"* → real slot checked, confirmation asked, booking saved

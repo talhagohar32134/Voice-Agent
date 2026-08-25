@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 
 from anthropic import AsyncAnthropic
@@ -37,6 +38,8 @@ if config.LLM_PROVIDER == "groq":
         _groq_client = AsyncOpenAI(
             api_key=config.GROQ_API_KEY or "missing",
             base_url="https://api.groq.com/openai/v1",
+            timeout=20.0,   # bound worst-case stalls on the free tier
+            max_retries=1,  # SDK default (2) backs off ~8-16s per retry - too slow for voice
         )
     except ImportError:
         logger.warning("openai package not installed - Groq provider unavailable")
@@ -190,19 +193,81 @@ class LLMManager:
 
 _MOOD_WORDS = {"positive", "neutral", "worried", "frustrated", "angry"}
 
-# Fast deterministic pass - catches obvious emotional language instantly
+# Fast deterministic pass - catches obvious emotional language instantly.
+# English + Roman Urdu/Hindi + Urdu (Arabic script) + Hindi (Devanagari).
 _KEYWORD_MOODS = {
-    "angry": ["angry", "furious", "ridiculous", "unacceptable", "outrageous",
-              "worst", "useless", "pathetic", "gussa", "naraz"],
-    "frustrated": ["frustrated", "frustrating", "nobody called", "waiting for weeks",
-                   "weeks now", "again and again", "sick of", "tired of", "complaint",
-                   "no response", "not helpful", "pareshan"],
-    "worried": ["worried", "scared", "anxious", "nervous", "afraid", "concerned",
-                "serious problem", "is everything ok", "ghabrahat"],
-    "positive": ["thank you", "thanks", "great", "perfect", "wonderful", "happy",
-                 "appreciate", "awesome", "shukriya", "bahut acha"],
+    "angry": [
+        # English
+        "angry", "furious", "ridiculous", "unacceptable", "not acceptable",
+        "outrageous", "worst", "useless", "pathetic", "how dare", "hate this",
+        # Roman Urdu / Hindi
+        "gussa", "gusa", "naraz", "naraaz", "khafa", "bekar", "ghatiya",
+        "besharam", "jhoot", "tang ho gaya", "tang ho gai", "chup kar",
+        "bakwas", "bakwaas", "faltu", "stupid", "idiot", "what the hell",
+        "kya kar rahe ho", "kya kar raha hai", "waste of time",
+        # Urdu script
+        "غصہ", "ناراض", "گھٹیا", "بیکار", "جھوٹ", "بے ہودہ",
+        # Devanagari
+        "गुस्सा", "नाराज़", "बेकार", "घटिया", "घिनौना",
+    ],
+    "frustrated": [
+        # English
+        "frustrated", "frustrating", "nobody called", "waiting for weeks",
+        "weeks now", "again and again", "sick of", "tired of", "complaint",
+        "no response", "not helpful", "fed up", "so upset", "upset",
+        # Roman Urdu / Hindi
+        "pareshan kar diya", "pareshan ho gaya", "baar baar", "bar bar",
+        "har baar", "koi nahi uthata", "koi jawab nahi", "koi sunta nahi",
+        "kitna wait", "itna wait", "baat suni nahi", "meri koi baat nahi",
+        "koi baat nahi sunta", "har waqt", "bara pareshan",
+        # Urdu script
+        "بار بار", "کوئی جواب نہیں", "پریشان کر دیا", "تنگ آ گیا", "شکایت",
+        # Devanagari
+        "बार बार", "तंग", "शिकायत",
+    ],
+    "worried": [
+        # English
+        "worried", "scared", "anxious", "nervous", "afraid", "concerned",
+        "serious problem", "is everything ok", "is it serious", "what if",
+        # Roman Urdu / Hindi
+        "fikar", "fikr", "dar lag", "darr lag", "ghabrahat", "ghabra rahi",
+        "pareshan hoon", "pareshan hun", "theek nahi lag raha", "kya hoga",
+        "muskibat", "bimari", "dar hai",
+        # Urdu script
+        "فکر", "پریشان", "ڈر لگ", "گھبراہٹ", "خدشہ",
+        # Devanagari
+        "चिंता", "डर", "परेशान", "घबराहट",
+    ],
+    "positive": [
+        # English
+        "thank you", "thanks", "great", "perfect", "wonderful", "happy",
+        "appreciate", "awesome", "amazing", "excellent",
+        # Roman Urdu / Hindi
+        "shukriya", "shukria", "jazakallah", "mehrbani", "zabardast",
+        "bahut acha", "bohat acha", "bohat khoob", "kamal", "behtareen",
+        "khush", "badhai", "allah barkat",
+        # Urdu script
+        "شکریہ", "جزاک اللہ", "مہربانی", "بہت اچھا", "خوش", "زبردست",
+        # Devanagari
+        "धन्यवाद", "शुक्रिया", "बहुत अच्छा", "खुश", "बहुत बढ़िया",
+    ],
 }
 _KEYWORD_PRIORITY = ["angry", "frustrated", "worried", "positive"]
+
+
+def _build_mood_patterns() -> dict:
+    """Precompile keyword regexes. Uses ASCII-alnum lookarounds instead of \\b:
+    Devanagari matras and Arabic-script diacritics are NOT regex word chars,
+    so \\b breaks inside Urdu/Hindi words. Lookarounds still stop false
+    positives like 'happy' matching inside 'unhappy'."""
+    patterns = {}
+    for mood in _KEYWORD_PRIORITY:
+        joined = "|".join(re.escape(kw) for kw in _KEYWORD_MOODS[mood])
+        patterns[mood] = re.compile(rf"(?<![a-z0-9])(?:{joined})(?![a-z0-9])")
+    return patterns
+
+
+_KEYWORD_PATTERNS = _build_mood_patterns()
 
 _EMPATHY_HINTS = {
     "worried": "The caller sounds WORRIED. Reassure them calmly and clearly before anything else.",
@@ -212,12 +277,11 @@ _EMPATHY_HINTS = {
 
 
 def _keyword_mood(text: str) -> str | None:
-    low = f" {text.lower()} "
-    best = None
+    low = text.lower()
     for mood in _KEYWORD_PRIORITY:
-        if any(kw in low for kw in _KEYWORD_MOODS[mood]):
+        if _KEYWORD_PATTERNS[mood].search(low):
             return mood  # priority order wins
-    return best
+    return None
 
 
 async def detect_mood(text: str) -> str:

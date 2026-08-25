@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 import config
 from call_queue import process_queue_batch
 from database import CallLog, CallQueue, SessionLocal, Transcript
-from llm import llm_manager, detect_mood, _EMPATHY_HINTS
+from llm import llm_manager, detect_mood, _keyword_mood, _EMPATHY_HINTS
 from outbound import initiate_outbound_call, redirect_call_to_voicemail
 from stt import DeepgramSTT
 from telephony import get_inbound_twiml, get_outbound_twiml
@@ -487,14 +487,19 @@ async def websocket_endpoint(websocket: WebSocket):
         row_id = await asyncio.to_thread(_persist_transcript_sync, call_sid, "user", text)
 
         async def _mood_worker():
-            # Throttle: max one mood LLM call per 10s per call (free-tier budget).
-            nonlocal last_mood_at
-            now_m = time.monotonic()
-            if now_m - last_mood_at < 10:
-                mood = caller_moods[-1] if caller_moods else "neutral"
+            # Keyword pass is instant and free - NEVER throttle it.
+            kw = _keyword_mood(text)
+            if kw:
+                mood = kw
             else:
-                last_mood_at = now_m
-                mood = await detect_mood(text)
+                # Throttle: max one mood LLM call per 10s per call (free-tier budget).
+                nonlocal last_mood_at
+                now_m = time.monotonic()
+                if now_m - last_mood_at < 10:
+                    mood = caller_moods[-1] if caller_moods else "neutral"
+                else:
+                    last_mood_at = now_m
+                    mood = await detect_mood(text)
             logger.info("Caller mood: %s", mood)
             caller_moods.append(mood)
             if row_id:
